@@ -1,10 +1,21 @@
-// The renderer: one canvas, top-down night gallery. It paints the floor, walls,
-// crates, shadow pools, the wardens' vision cones (raycast against walls so the
-// cone stops at cover, exactly as the detection rules see it), the thief, the
-// shards, the exit, the HUD and every screen.
+// The renderer: one canvas, top-down night gallery. It paints the floor,
+// walls, crates, shadow pools, the wardens' vision cones (raycast against
+// walls so the cone stops at cover, exactly as the detection rules see it),
+// the thief, the shards, the exit, the HUD and every screen.
 
-import { FIELD, GUARD, PALETTE, FONT } from './config.js';
-import { STATE_ALERT, STATE_INVESTIGATE, STATE_SUSPICIOUS } from './guard.js';
+import {
+  EYE_WARN,
+  FIELD,
+  GUARD,
+  PALETTE,
+  FONT,
+  WING_NAMES,
+} from './config.js';
+import {
+  STATE_ALERT,
+  STATE_INVESTIGATE,
+  STATE_SUSPICIOUS,
+} from './guard.js';
 
 export const SCREEN_TITLE = 'title';
 export const SCREEN_PLAY = 'play';
@@ -14,8 +25,10 @@ export const SCREEN_LEVEL_CLEAR = 'level-clear';
 export const SCREEN_OVER = 'over';
 export const SCREEN_WIN = 'win';
 
-/** Raycast one edge of a vision cone until a wall or crate stops it. */
-function rayDistance(guard, angle, level) {
+const CONE_RAYS = 14;
+
+// Raycast one edge of a vision cone until a wall or crate stops it.
+function coneReach(guard, angle, level) {
   const step = 6;
   for (let d = step; d <= GUARD.viewRange; d += step) {
     const x = guard.x + Math.cos(angle) * d;
@@ -26,8 +39,7 @@ function rayDistance(guard, angle, level) {
   return GUARD.viewRange;
 }
 
-function drawCone(ctx, guard, level) {
-  const rays = 14;
+function paintCone(ctx, guard, level) {
   const start = guard.angle - GUARD.viewHalfAngle;
   const end = guard.angle + GUARD.viewHalfAngle;
   const colour = guard.state === STATE_ALERT
@@ -38,16 +50,16 @@ function drawCone(ctx, guard, level) {
   ctx.fillStyle = colour;
   ctx.beginPath();
   ctx.moveTo(guard.x, guard.y);
-  for (let i = 0; i <= rays; i += 1) {
-    const angle = start + ((end - start) * i) / rays;
-    const d = rayDistance(guard, angle, level);
+  for (let i = 0; i <= CONE_RAYS; i += 1) {
+    const angle = start + ((end - start) * i) / CONE_RAYS;
+    const d = coneReach(guard, angle, level);
     ctx.lineTo(guard.x + Math.cos(angle) * d, guard.y + Math.sin(angle) * d);
   }
   ctx.closePath();
   ctx.fill();
 }
 
-function drawTileFloor(ctx, level) {
+function paintFloor(ctx, level) {
   for (let row = 0; row < FIELD.rows; row += 1) {
     for (let col = 0; col < FIELD.cols; col += 1) {
       const x = col * FIELD.tile;
@@ -62,7 +74,7 @@ function drawTileFloor(ctx, level) {
   }
 }
 
-function drawWallsAndCrates(ctx, level) {
+function paintWalls(ctx, level) {
   for (const key of level.walls) {
     const [col, row] = key.split(',').map(Number);
     const x = col * FIELD.tile;
@@ -86,7 +98,7 @@ function drawWallsAndCrates(ctx, level) {
   }
 }
 
-function drawShard(ctx, shard, time) {
+function paintShard(ctx, shard, time) {
   const pulse = 0.7 + 0.3 * Math.sin(time * 3 + shard.x);
   ctx.save();
   ctx.translate(shard.x, shard.y);
@@ -102,7 +114,7 @@ function drawShard(ctx, shard, time) {
   ctx.restore();
 }
 
-function drawExit(ctx, level, open, time) {
+function paintExit(ctx, level, open, time) {
   const { x, y } = level.exit;
   const glow = 0.5 + 0.3 * Math.sin(time * 2);
   ctx.fillStyle = open ? `rgba(142, 202, 230, ${glow})` : 'rgba(142, 202, 230, 0.12)';
@@ -118,10 +130,10 @@ function drawExit(ctx, level, open, time) {
   ctx.fillText(open ? 'EXIT' : 'LOCKED', x, y + 32);
 }
 
-function drawGuard(ctx, guard, time) {
+function paintWarden(ctx, guard, time) {
   const alerted = guard.state === STATE_ALERT;
-  const suspicious = guard.state === STATE_SUSPICIOUS || guard.state === STATE_INVESTIGATE;
-  ctx.fillStyle = alerted ? PALETTE.guardAlert : suspicious ? '#ffb020' : PALETTE.guardCalm;
+  const wary = guard.state === STATE_SUSPICIOUS || guard.state === STATE_INVESTIGATE;
+  ctx.fillStyle = alerted ? PALETTE.guardAlert : wary ? '#ffb020' : PALETTE.guardCalm;
   ctx.beginPath();
   ctx.arc(guard.x, guard.y, GUARD.radius, 0, Math.PI * 2);
   ctx.fill();
@@ -130,7 +142,10 @@ function drawGuard(ctx, guard, time) {
   ctx.lineWidth = 3;
   ctx.beginPath();
   ctx.moveTo(guard.x, guard.y);
-  ctx.lineTo(guard.x + Math.cos(guard.angle) * (GUARD.radius + 7), guard.y + Math.sin(guard.angle) * (GUARD.radius + 7));
+  ctx.lineTo(
+    guard.x + Math.cos(guard.angle) * (GUARD.radius + 7),
+    guard.y + Math.sin(guard.angle) * (GUARD.radius + 7),
+  );
   ctx.stroke();
   ctx.fillStyle = '#fff';
   ctx.beginPath();
@@ -150,7 +165,9 @@ function drawGuard(ctx, guard, time) {
     ctx.beginPath();
     ctx.arc(guard.x, guard.y, GUARD.radius + 7, -Math.PI / 2, Math.PI * 1.5);
     ctx.stroke();
-    ctx.strokeStyle = guard.meter >= 100 ? PALETTE.guardAlert : guard.meter >= 35 ? '#ffb020' : '#e8e8e8';
+    ctx.strokeStyle = guard.meter >= 100
+      ? PALETTE.guardAlert
+      : guard.meter >= EYE_WARN ? '#ffb020' : '#e8e8e8';
     ctx.lineWidth = 3;
     ctx.beginPath();
     ctx.arc(guard.x, guard.y, GUARD.radius + 7, -Math.PI / 2, -Math.PI / 2 + (Math.PI * 2 * guard.meter) / 100);
@@ -161,7 +178,7 @@ function drawGuard(ctx, guard, time) {
     ctx.font = `bold 16px ${FONT}`;
     ctx.textAlign = 'center';
     ctx.fillText('!', guard.x, guard.y - GUARD.radius - 12);
-  } else if (suspicious) {
+  } else if (wary) {
     ctx.fillStyle = '#ffb020';
     ctx.font = `bold 16px ${FONT}`;
     ctx.textAlign = 'center';
@@ -169,7 +186,7 @@ function drawGuard(ctx, guard, time) {
   }
 }
 
-function drawPlayer(ctx, player, time) {
+function paintThief(ctx, player, time) {
   // Noise ring: what the wardens can hear, drawn so the player can feel it.
   if (player.noiseRadius > 0) {
     const pulse = 0.25 + 0.1 * Math.sin(time * 6);
@@ -198,7 +215,20 @@ function drawPlayer(ctx, player, time) {
   ctx.stroke();
 }
 
-function drawHud(ctx, world, meter) {
+function paintPebbles(ctx, world) {
+  for (const pebble of world.pebbles) {
+    ctx.fillStyle = '#cfd6e4';
+    ctx.beginPath();
+    ctx.arc(pebble.x, pebble.y, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(207, 214, 228, 0.5)';
+    ctx.beginPath();
+    ctx.arc(pebble.x, pebble.y, 22 * (1 - pebble.ttl / 1.6) + 8, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+}
+
+function paintHud(ctx, world, meter) {
   const level = world.level;
   ctx.fillStyle = PALETTE.panel;
   ctx.fillRect(0, 0, FIELD.width, 44);
@@ -213,7 +243,10 @@ function drawHud(ctx, world, meter) {
   ctx.fillStyle = PALETTE.shard;
   ctx.fillText(`◆ ${taken}/${total} shards`, 330, 23);
   ctx.fillStyle = PALETTE.text;
-  ctx.fillText(`Tries: ${'●'.repeat(Math.max(0, world.triesLeft))}${'○'.repeat(Math.max(0, 3 - world.triesLeft))}`, 470, 23);
+  ctx.fillText(
+    `Tries: ${'●'.repeat(Math.max(0, world.triesLeft))}${'○'.repeat(Math.max(0, 3 - world.triesLeft))}`,
+    470, 23,
+  );
   // Stamina bar.
   ctx.fillStyle = '#2a3040';
   ctx.fillRect(620, 15, 120, 14);
@@ -224,19 +257,19 @@ function drawHud(ctx, world, meter) {
   ctx.fillText('SPRINT', 746, 23);
   // Detection eye: the highest warden meter, right side.
   const eyeX = 1060;
-  ctx.fillStyle = meter >= 100 ? PALETTE.guardAlert : meter >= 35 ? '#ffb020' : PALETTE.text;
+  ctx.fillStyle = meter >= 100 ? PALETTE.guardAlert : meter >= EYE_WARN ? '#ffb020' : PALETTE.text;
   ctx.font = `bold 15px ${FONT}`;
   ctx.textAlign = 'right';
-  ctx.fillText(meter >= 100 ? 'SPOTTED!' : meter >= 35 ? 'SUSPICIOUS' : 'UNSEEN', eyeX - 8, 23);
+  ctx.fillText(meter >= 100 ? 'SPOTTED!' : meter >= EYE_WARN ? 'SUSPICIOUS' : 'UNSEEN', eyeX - 8, 23);
   ctx.fillStyle = '#2a3040';
   ctx.fillRect(eyeX, 13, 150, 16);
-  ctx.fillStyle = meter >= 100 ? PALETTE.guardAlert : meter >= 35 ? '#ffb020' : PALETTE.shard;
+  ctx.fillStyle = meter >= 100 ? PALETTE.guardAlert : meter >= EYE_WARN ? '#ffb020' : PALETTE.shard;
   ctx.fillRect(eyeX, 13, 150 * (meter / 100), 16);
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';
 }
 
-function overlay(ctx, title, lines, accent) {
+function paintOverlay(ctx, title, lines, accent) {
   ctx.fillStyle = 'rgba(5, 7, 12, 0.72)';
   ctx.fillRect(0, 0, FIELD.width, FIELD.height);
   ctx.textAlign = 'center';
@@ -253,6 +286,46 @@ function overlay(ctx, title, lines, accent) {
   ctx.fillText('Press Enter or click to continue', FIELD.width / 2, 352 + lines.length * 32 + 24);
 }
 
+function paintScreenOverlay(ctx, world, screen, bestLevel) {
+  const level = world.level;
+  if (screen === SCREEN_TITLE) {
+    paintOverlay(ctx, 'LUMEN HEIST', [
+      'A top-down stealth game. Steal every starlight shard,',
+      'slip past the wardens, and reach the exit unseen.',
+      '',
+      'WASD / arrows — move      Shift — sneak (slow, quiet)',
+      'Space — sprint (fast, loud)      Click — throw a pebble',
+      'Hide in the dark. Watch the cones. Mind the eye meter.',
+      '',
+      bestLevel > 0
+        ? `Best so far: reached ${WING_NAMES[bestLevel] ?? 'the end'}.`
+        : 'Three wings of the Velmora Gallery await.',
+    ], PALETTE.shard);
+  } else if (screen === SCREEN_PAUSED) {
+    paintOverlay(ctx, 'PAUSED', ['The wardens wait. Take a breath.'], PALETTE.text);
+  } else if (screen === SCREEN_CAUGHT) {
+    paintOverlay(ctx, 'CAUGHT!', [
+      `A warden laid hands on you. ${world.triesLeft} ${world.triesLeft === 1 ? 'try' : 'tries'} left in ${level.name}.`,
+      world.triesLeft > 0 ? 'The gallery resets. Learn the patrol and try again.' : 'No tries left.',
+    ], PALETTE.danger);
+  } else if (screen === SCREEN_LEVEL_CLEAR) {
+    paintOverlay(ctx, 'WING CLEARED', [
+      `Every shard in ${level.name} is yours.`,
+      'The next wing is darker, and its wardens quicker.',
+    ], PALETTE.ok);
+  } else if (screen === SCREEN_OVER) {
+    paintOverlay(ctx, 'THE HEIST FAILS', [
+      'Out of tries. The Velmora Gallery keeps its starlight.',
+      'Press Enter to start the heist over.',
+    ], PALETTE.danger);
+  } else if (screen === SCREEN_WIN) {
+    paintOverlay(ctx, 'THE STARLIGHT IS YOURS', [
+      'Every wing cleared, every shard stolen, never once seen.',
+      'Wren the moth-thief vanishes into the night.',
+    ], PALETTE.shard);
+  }
+}
+
 export function createRenderer(canvas) {
   const ctx = canvas.getContext('2d');
   canvas.width = FIELD.width;
@@ -264,66 +337,24 @@ export function createRenderer(canvas) {
     ctx.fillRect(0, 0, FIELD.width, FIELD.height);
     const level = world.level;
     const time = world.time;
-    drawTileFloor(ctx, level);
-    for (const guard of world.guards) drawCone(ctx, guard, level);
-    drawWallsAndCrates(ctx, level);
-    for (const shard of level.shards) if (!shard.taken) drawShard(ctx, shard, time);
-    drawExit(ctx, level, world.shardsTaken >= level.shards.length, time);
-    for (const pebble of world.pebbles) {
-      ctx.fillStyle = '#cfd6e4';
-      ctx.beginPath();
-      ctx.arc(pebble.x, pebble.y, 5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(207, 214, 228, 0.5)';
-      ctx.beginPath();
-      ctx.arc(pebble.x, pebble.y, 22 * (1 - pebble.ttl / 1.6) + 8, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-    for (const guard of world.guards) drawGuard(ctx, guard, time);
-    drawPlayer(ctx, world.player, time);
+    paintFloor(ctx, level);
+    for (const guard of world.guards) paintCone(ctx, guard, level);
+    paintWalls(ctx, level);
+    for (const shard of level.shards) if (!shard.taken) paintShard(ctx, shard, time);
+    paintExit(ctx, level, world.shardsTaken >= level.shards.length, time);
+    paintPebbles(ctx, world);
+    for (const guard of world.guards) paintWarden(ctx, guard, time);
+    paintThief(ctx, world.player, time);
     let meter = 0;
     for (const guard of world.guards) meter = Math.max(meter, guard.meter);
-    drawHud(ctx, world, meter);
+    paintHud(ctx, world, meter);
 
     if (world.caughtFlash > 0) {
       ctx.fillStyle = `rgba(255, 46, 77, ${world.caughtFlash * 0.5})`;
       ctx.fillRect(0, 0, FIELD.width, FIELD.height);
     }
 
-    if (screen === SCREEN_TITLE) {
-      overlay(ctx, 'LUMEN HEIST', [
-        'A top-down stealth game. Steal every starlight shard,',
-        'slip past the wardens, and reach the exit unseen.',
-        '',
-        'WASD / arrows — move      Shift — sneak (slow, quiet)',
-        'Space — sprint (fast, loud)      Click — throw a pebble',
-        'Hide in the dark. Watch the cones. Mind the eye meter.',
-        '',
-        bestLevel > 0 ? `Best so far: reached ${['The Atrium', 'The Vault Wing', 'The Star Vault'][bestLevel] ?? 'the end'}.` : 'Three wings of the Velmora Gallery await.',
-      ], PALETTE.shard);
-    } else if (screen === SCREEN_PAUSED) {
-      overlay(ctx, 'PAUSED', ['The wardens wait. Take a breath.'], PALETTE.text);
-    } else if (screen === SCREEN_CAUGHT) {
-      overlay(ctx, 'CAUGHT!', [
-        `A warden laid hands on you. ${world.triesLeft} ${world.triesLeft === 1 ? 'try' : 'tries'} left in ${level.name}.`,
-        world.triesLeft > 0 ? 'The gallery resets. Learn the patrol and try again.' : 'No tries left.',
-      ], PALETTE.danger);
-    } else if (screen === SCREEN_LEVEL_CLEAR) {
-      overlay(ctx, 'WING CLEARED', [
-        `Every shard in ${level.name} is yours.`,
-        'The next wing is darker, and its wardens quicker.',
-      ], PALETTE.ok);
-    } else if (screen === SCREEN_OVER) {
-      overlay(ctx, 'THE HEIST FAILS', [
-        'Out of tries. The Velmora Gallery keeps its starlight.',
-        'Press Enter to start the heist over.',
-      ], PALETTE.danger);
-    } else if (screen === SCREEN_WIN) {
-      overlay(ctx, 'THE STARLIGHT IS YOURS', [
-        'Every wing cleared, every shard stolen, never once seen.',
-        'Wren the moth-thief vanishes into the night.',
-      ], PALETTE.shard);
-    }
+    paintScreenOverlay(ctx, world, screen, bestLevel);
   }
 
   return { draw };

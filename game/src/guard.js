@@ -1,41 +1,55 @@
-// Wardens: patrol, suspicion, chase. A warden walks its waypoints, pauses, and
-// watches a cone in front of it. When it can see the thief its detection meter
-// fills (faster up close, slower in shadow, slower still when the thief sneaks);
-// at 35 it walks over to look, at 100 it chases. Noise — sprinting feet or a
-// thrown pebble — pulls it to investigate. Lose sight for a while and it calms.
+// Wardens: patrol, suspicion, chase. A warden walks its waypoints, pauses,
+// and watches a cone in front of it. When it can see the thief its detection
+// meter fills — faster up close, slower in shadow, slower still when the thief
+// sneaks. At 25 it walks over to look; at 100 it chases. Noise — sprinting
+// feet or a thrown pebble — pulls it to investigate. Lose sight for a while
+// and it calms down and goes back to its round.
 
-import { FIELD, GUARD, STEP } from './config.js';
+import {
+  FIELD,
+  GUARD,
+  SHADOW_DAMP,
+  SNEAK_DAMP,
+  STEP,
+} from './config.js';
 
 export const STATE_PATROL = 'patrol';
 export const STATE_SUSPICIOUS = 'suspicious';
 export const STATE_ALERT = 'alert';
 export const STATE_INVESTIGATE = 'investigate';
 
-/** True when the straight line between two points crosses no wall or crate. */
+// How far apart two headings are, wrapped to 0..PI.
+function headingGap(a, b) {
+  let gap = Math.abs(a - b);
+  if (gap > Math.PI) gap = Math.PI * 2 - gap;
+  return gap;
+}
+
+// True when the straight line between two points crosses no wall or crate.
 export function lineOfSightClear(x1, y1, x2, y2, isSightBlocker) {
   const dx = x2 - x1;
   const dy = y2 - y1;
-  const distance = Math.hypot(dx, dy);
-  const steps = Math.max(1, Math.ceil(distance / 8));
-  for (let i = 1; i < steps; i += 1) {
-    const t = i / steps;
+  const reach = Math.hypot(dx, dy);
+  const samples = Math.max(1, Math.ceil(reach / 8));
+  for (let i = 1; i < samples; i += 1) {
+    const t = i / samples;
     if (isSightBlocker(x1 + dx * t, y1 + dy * t)) return false;
   }
   return true;
 }
 
 export function createGuard(patrol, random) {
-  const waypoints = patrol.waypoints.map(([col, row]) => ({
+  const stops = patrol.waypoints.map(([col, row]) => ({
     x: col * FIELD.tile + FIELD.tile / 2,
     y: row * FIELD.tile + FIELD.tile / 2,
   }));
-  const start = waypoints[0];
+  const first = stops[0];
   return {
-    x: start.x,
-    y: start.y,
+    x: first.x,
+    y: first.y,
     angle: 0,
     state: STATE_PATROL,
-    waypointIndex: 1 % waypoints.length,
+    waypointIndex: 1 % stops.length,
     pauseLeft: 0,
     meter: 0,
     lastSeen: null,
@@ -43,36 +57,42 @@ export function createGuard(patrol, random) {
     investigateLeft: 0,
     chaseLeft: 0,
     stepPhase: random() * Math.PI * 2,
-    waypoints,
+    waypoints: stops,
     pause: patrol.pause,
   };
 }
 
-function angleTo(guard, x, y) {
+function bearingTo(guard, x, y) {
   return Math.atan2(y - guard.y, x - guard.x);
 }
 
-function turnToward(guard, targetAngle, maxTurn) {
-  let diff = targetAngle - guard.angle;
+function steerToward(guard, wanted, maxTurn) {
+  let diff = wanted - guard.angle;
   while (diff > Math.PI) diff -= Math.PI * 2;
   while (diff < -Math.PI) diff += Math.PI * 2;
   const turn = Math.max(-maxTurn, Math.min(maxTurn, diff));
   guard.angle += turn;
 }
 
-/** Move toward a point, sliding along walls; returns the distance left. */
-function moveToward(guard, target, speed, dt, isBlocked) {
+// Move toward a point, sliding along walls; returns the distance left.
+function advanceToward(guard, target, speed, dt, isBlocked) {
   const dx = target.x - guard.x;
   const dy = target.y - guard.y;
-  const distance = Math.hypot(dx, dy);
-  if (distance < 1) return 0;
-  const step = Math.min(distance, speed * dt);
-  const nx = guard.x + (dx / distance) * step;
-  const ny = guard.y + (dy / distance) * step;
+  const reach = Math.hypot(dx, dy);
+  if (reach < 1) return 0;
+  const step = Math.min(reach, speed * dt);
+  const nx = guard.x + (dx / reach) * step;
+  const ny = guard.y + (dy / reach) * step;
   if (!isBlocked(nx, guard.y, GUARD.radius)) guard.x = nx;
   if (!isBlocked(guard.x, ny, GUARD.radius)) guard.y = ny;
-  turnToward(guard, angleTo(guard, target.x, target.y), 6 * dt);
+  steerToward(guard, bearingTo(guard, target.x, target.y), 6 * dt);
   return Math.hypot(target.x - guard.x, target.y - guard.y);
+}
+
+function sendToLook(guard, x, y) {
+  guard.state = STATE_INVESTIGATE;
+  guard.investigateTarget = { x, y };
+  guard.investigateLeft = GUARD.investigateTime;
 }
 
 export function updateGuard(guard, dt, player, world) {
@@ -80,16 +100,15 @@ export function updateGuard(guard, dt, player, world) {
   const dy = player.y - guard.y;
   const distance = Math.hypot(dx, dy);
   const facing = Math.atan2(dy, dx);
-  let angleDiff = Math.abs(facing - guard.angle);
-  if (angleDiff > Math.PI) angleDiff = Math.PI * 2 - angleDiff;
-  const inCone = distance < GUARD.viewRange && angleDiff < GUARD.viewHalfAngle;
+  const gap = headingGap(facing, guard.angle);
+  const inCone = distance < GUARD.viewRange && gap < GUARD.viewHalfAngle;
   const seen = inCone && world.lineOfSightClear(guard.x, guard.y, player.x, player.y);
 
   // Detection fills by closeness; shadow and sneaking both halve it.
   if (seen) {
     let rate = GUARD.detectRate * (1 - (distance / GUARD.viewRange) * 0.9);
-    if (world.inShadow(player.x, player.y)) rate *= 0.5;
-    if (player.sneaking) rate *= 0.5;
+    if (world.inShadow(player.x, player.y)) rate *= SHADOW_DAMP;
+    if (player.sneaking) rate *= SNEAK_DAMP;
     guard.meter = Math.min(100, guard.meter + rate * dt);
     guard.lastSeen = { x: player.x, y: player.y };
   } else {
@@ -99,9 +118,7 @@ export function updateGuard(guard, dt, player, world) {
   // Footsteps: a loud gait inside earshot is heard even unseen.
   if (!seen && player.noiseRadius > 0 && distance < player.noiseRadius + 40) {
     if (guard.state === STATE_PATROL) {
-      guard.state = STATE_INVESTIGATE;
-      guard.investigateTarget = { x: player.x, y: player.y };
-      guard.investigateLeft = GUARD.investigateTime;
+      sendToLook(guard, player.x, player.y);
     }
   }
 
@@ -121,17 +138,17 @@ export function updateGuard(guard, dt, player, world) {
     } else {
       guard.chaseLeft -= dt;
       if (guard.chaseLeft <= 0) {
-        guard.state = STATE_INVESTIGATE;
-        guard.investigateTarget = guard.lastSeen ? { ...guard.lastSeen } : { x: guard.x, y: guard.y };
-        guard.investigateLeft = GUARD.investigateTime;
+        // Give up the chase and go look where the thief was last seen.
+        if (guard.lastSeen) sendToLook(guard, guard.lastSeen.x, guard.lastSeen.y);
+        else sendToLook(guard, guard.x, guard.y);
       }
     }
     const target = guard.lastSeen ?? { x: player.x, y: player.y };
-    moveToward(guard, target, GUARD.chaseSpeed, dt, world.isBlocked);
+    advanceToward(guard, target, GUARD.chaseSpeed, dt, world.isBlocked);
     guard.stepPhase += dt * 11;
   } else if (guard.state === STATE_SUSPICIOUS || guard.state === STATE_INVESTIGATE) {
     const target = guard.investigateTarget ?? { x: guard.x, y: guard.y };
-    const left = moveToward(guard, target, GUARD.investigateSpeed, dt, world.isBlocked);
+    const left = advanceToward(guard, target, GUARD.investigateSpeed, dt, world.isBlocked);
     guard.stepPhase += dt * 8;
     if (left < 10) {
       guard.investigateLeft -= dt;
@@ -151,7 +168,7 @@ export function updateGuard(guard, dt, player, world) {
       }
     } else {
       const target = guard.waypoints[guard.waypointIndex];
-      const left = moveToward(guard, target, GUARD.patrolSpeed, dt, world.isBlocked);
+      const left = advanceToward(guard, target, GUARD.patrolSpeed, dt, world.isBlocked);
       guard.stepPhase += dt * 6;
       if (left < 8) guard.pauseLeft = guard.pause;
     }
@@ -160,14 +177,12 @@ export function updateGuard(guard, dt, player, world) {
   return guard;
 }
 
-/** A pebble landing nearby pulls a patrolling or suspicious warden over to look. */
+// A pebble landing nearby pulls a patrolling or suspicious warden over to look.
 export function distractGuard(guard, x, y) {
   const distance = Math.hypot(x - guard.x, y - guard.y);
   if (guard.state === STATE_ALERT) return;
   if (distance < 260) {
-    guard.state = STATE_INVESTIGATE;
-    guard.investigateTarget = { x, y };
-    guard.investigateLeft = GUARD.investigateTime;
+    sendToLook(guard, x, y);
     guard.meter = Math.max(guard.meter, 30);
   }
 }
