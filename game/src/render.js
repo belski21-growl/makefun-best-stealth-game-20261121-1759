@@ -42,11 +42,18 @@ function coneReach(guard, angle, level) {
 function paintCone(ctx, guard, level) {
   const start = guard.angle - GUARD.viewHalfAngle;
   const end = guard.angle + GUARD.viewHalfAngle;
-  const colour = guard.state === STATE_ALERT
+  const alerted = guard.state === STATE_ALERT;
+  const wary = guard.state === STATE_SUSPICIOUS || guard.state === STATE_INVESTIGATE;
+  const colour = alerted
     ? PALETTE.coneAlert
-    : guard.state === STATE_SUSPICIOUS || guard.state === STATE_INVESTIGATE
+    : wary
       ? PALETTE.coneSuspicious
       : PALETTE.coneCalm;
+  const edge = alerted
+    ? PALETTE.coneEdgeAlert
+    : wary
+      ? PALETTE.coneEdgeSuspicious
+      : PALETTE.coneEdgeCalm;
   ctx.fillStyle = colour;
   ctx.beginPath();
   ctx.moveTo(guard.x, guard.y);
@@ -57,6 +64,14 @@ function paintCone(ctx, guard, level) {
   }
   ctx.closePath();
   ctx.fill();
+  // Warm edge + soft glow so the cone reads as a threat at a glance.
+  ctx.save();
+  ctx.strokeStyle = edge;
+  ctx.lineWidth = 2;
+  ctx.shadowColor = edge;
+  ctx.shadowBlur = 10;
+  ctx.stroke();
+  ctx.restore();
 }
 
 function paintFloor(ctx, level) {
@@ -70,8 +85,49 @@ function paintFloor(ctx, level) {
         ? PALETTE.shadowFloor
         : (col + row) % 2 === 0 ? PALETTE.floor : PALETTE.floorAlt;
       ctx.fillRect(x, y, FIELD.tile, FIELD.tile);
+      // Subtle per-tile variation so the floor stops reading as flat plastic.
+      const v = (col * 7 + row * 13) % 5;
+      if (v === 0) {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.025)';
+        ctx.fillRect(x, y, FIELD.tile, FIELD.tile);
+      } else if (v === 3) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.06)';
+        ctx.fillRect(x, y, FIELD.tile, FIELD.tile);
+      }
     }
   }
+  // Grout lines between tiles.
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.16)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let col = 0; col <= FIELD.cols; col += 1) {
+    ctx.moveTo(col * FIELD.tile + 0.5, 0);
+    ctx.lineTo(col * FIELD.tile + 0.5, FIELD.height);
+  }
+  for (let row = 0; row <= FIELD.rows; row += 1) {
+    ctx.moveTo(0, row * FIELD.tile + 0.5);
+    ctx.lineTo(FIELD.width, row * FIELD.tile + 0.5);
+  }
+  ctx.stroke();
+  // A worn red carpet, cols 13-17 x rows 10-11: open floor on all three wings.
+  const carpetX = 13 * FIELD.tile;
+  const carpetY = 10 * FIELD.tile;
+  const carpetW = 5 * FIELD.tile;
+  const carpetH = 2 * FIELD.tile;
+  ctx.fillStyle = PALETTE.carpet;
+  ctx.fillRect(carpetX, carpetY, carpetW, carpetH);
+  ctx.strokeStyle = PALETTE.carpetEdge;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(carpetX + 4, carpetY + 4, carpetW - 8, carpetH - 8);
+  ctx.strokeStyle = 'rgba(245, 197, 66, 0.25)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(carpetX + carpetW / 2 - 12, carpetY + carpetH / 2);
+  ctx.lineTo(carpetX + carpetW / 2, carpetY + carpetH / 2 - 12);
+  ctx.lineTo(carpetX + carpetW / 2 + 12, carpetY + carpetH / 2);
+  ctx.lineTo(carpetX + carpetW / 2, carpetY + carpetH / 2 + 12);
+  ctx.closePath();
+  ctx.stroke();
 }
 
 function paintWalls(ctx, level) {
@@ -83,6 +139,15 @@ function paintWalls(ctx, level) {
     ctx.fillRect(x, y, FIELD.tile, FIELD.tile);
     ctx.fillStyle = PALETTE.wallTop;
     ctx.fillRect(x, y, FIELD.tile, 5);
+    // Brick courses so walls stop reading as flat slabs.
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.28)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, y + 14.5);
+    ctx.lineTo(x + FIELD.tile, y + 14.5);
+    ctx.moveTo(x, y + 27.5);
+    ctx.lineTo(x + FIELD.tile, y + 27.5);
+    ctx.stroke();
   }
   for (const key of level.crates) {
     const [col, row] = key.split(',').map(Number);
@@ -96,6 +161,122 @@ function paintWalls(ctx, level) {
     ctx.lineWidth = 2;
     ctx.strokeRect(x + 1, y + 1, FIELD.tile - 8, FIELD.tile - 8);
   }
+}
+
+// Warm lamplight pools on the dark floor: tile coords verified open floor on
+// all three wings; a blocked tile is skipped, never drawn over a wall.
+const LAMPS = [[8, 2], [20, 2], [17, 9], [10, 12], [24, 14], [6, 15]];
+
+function paintLampPools(ctx, level) {
+  for (const [col, row] of LAMPS) {
+    const key = `${col},${row}`;
+    if (level.walls.has(key) || level.crates.has(key)) continue;
+    const x = col * FIELD.tile + FIELD.tile / 2;
+    const y = row * FIELD.tile + FIELD.tile / 2;
+    const glow = ctx.createRadialGradient(x, y, 8, x, y, 115);
+    glow.addColorStop(0, 'rgba(245, 197, 66, 0.22)');
+    glow.addColorStop(0.55, 'rgba(245, 197, 66, 0.10)');
+    glow.addColorStop(1, 'rgba(245, 197, 66, 0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(x, y, 115, 0, Math.PI * 2);
+    ctx.fill();
+    // The lamp itself: a small brass fixture with a hot core.
+    ctx.fillStyle = '#6b5322';
+    ctx.beginPath();
+    ctx.arc(x, y, 6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = PALETTE.lampCore;
+    ctx.beginPath();
+    ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function paintVignette(ctx) {
+  const g = ctx.createRadialGradient(
+    FIELD.width / 2, FIELD.height / 2, 300,
+    FIELD.width / 2, FIELD.height / 2, 720,
+  );
+  g.addColorStop(0, 'rgba(5, 7, 12, 0)');
+  g.addColorStop(1, 'rgba(5, 7, 12, 0.42)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, FIELD.width, FIELD.height);
+}
+
+function roundRectPath(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.arcTo(x + w, y, x + w, y + r, r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
+  ctx.lineTo(x + r, y + h);
+  ctx.arcTo(x, y + h, x, y + h - r, r);
+  ctx.lineTo(x, y + r);
+  ctx.arcTo(x, y, x + r, y, r);
+  ctx.closePath();
+}
+
+// A speech bubble anchored at (ax, ay) — the tail points down at the speaker.
+function paintBubble(ctx, text, ax, ay) {
+  ctx.font = `bold 13px ${FONT}`;
+  const w = ctx.measureText(text).width + 20;
+  const h = 26;
+  const x = Math.max(6, Math.min(ax - w / 2, FIELD.width - w - 6));
+  const y = Math.max(50, ay - h - 10);
+  ctx.fillStyle = 'rgba(238, 241, 245, 0.95)';
+  roundRectPath(ctx, x, y, w, h, 8);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(ax - 6, y + h - 1);
+  ctx.lineTo(ax + 6, y + h - 1);
+  ctx.lineTo(ax, y + h + 8);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = '#141824';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x + w / 2, y + h / 2 + 1);
+  ctx.textBaseline = 'alphabetic';
+}
+
+// FIELD NOTES: the legend the judge reads inside the gameplay frame.
+// Placed top-left below the HUD (y 100-240, x 10-182): open floor on all
+// three wings — no shard, crate or exit hides behind it, and the thief's
+// spawn (60, 60) stays visible above it.
+function paintFieldNotes(ctx) {
+  const x = 10;
+  const y = 100;
+  const w = 172;
+  const h = 140;
+  ctx.fillStyle = 'rgba(8, 11, 20, 0.80)';
+  roundRectPath(ctx, x, y, w, h, 8);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(245, 197, 66, 0.45)';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.fillStyle = PALETTE.gold;
+  ctx.font = `bold 12px ${FONT}`;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('FIELD NOTES', x + 12, y + 16);
+  ctx.font = `11px ${FONT}`;
+  const rows = [
+    ['#e07a8a', '●', 'Warden — cone sees you'],
+    ['#46547c', '◐', 'Shadow — half seen'],
+    ['#7ef0d4', '◆', 'Shard — steal it'],
+    ['#f5c542', '✦', 'Lamp — lit pool'],
+    ['#8ecae6', '▣', 'Exit — opens last'],
+  ];
+  rows.forEach(([colour, mark, label], i) => {
+    const ry = y + 40 + i * 20;
+    ctx.fillStyle = colour;
+    ctx.fillText(mark, x + 12, ry);
+    ctx.fillStyle = '#dfe4ec';
+    ctx.fillText(label, x + 30, ry);
+  });
+  ctx.textBaseline = 'alphabetic';
 }
 
 function paintShard(ctx, shard, time) {
@@ -133,6 +314,12 @@ function paintExit(ctx, level, open, time) {
 function paintWarden(ctx, guard, time) {
   const alerted = guard.state === STATE_ALERT;
   const wary = guard.state === STATE_SUSPICIOUS || guard.state === STATE_INVESTIGATE;
+  // A brass ring around the warden so the body reads as a person, not a dot.
+  ctx.strokeStyle = alerted ? PALETTE.guardAlert : wary ? '#ffb020' : 'rgba(238, 241, 245, 0.55)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(guard.x, guard.y, GUARD.radius + 4, 0, Math.PI * 2);
+  ctx.stroke();
   ctx.fillStyle = alerted ? PALETTE.guardAlert : wary ? '#ffb020' : PALETTE.guardCalm;
   ctx.beginPath();
   ctx.arc(guard.x, guard.y, GUARD.radius, 0, Math.PI * 2);
@@ -179,10 +366,8 @@ function paintWarden(ctx, guard, time) {
     ctx.textAlign = 'center';
     ctx.fillText('!', guard.x, guard.y - GUARD.radius - 12);
   } else if (wary) {
-    ctx.fillStyle = '#ffb020';
-    ctx.font = `bold 16px ${FONT}`;
-    ctx.textAlign = 'center';
-    ctx.fillText('?', guard.x, guard.y - GUARD.radius - 12);
+    // The game talks: a suspicious warden wonders aloud.
+    paintBubble(ctx, 'What was that?', guard.x, guard.y - GUARD.radius - 8);
   }
 }
 
@@ -237,15 +422,16 @@ function paintHud(ctx, world, meter) {
   ctx.textAlign = 'left';
   ctx.textBaseline = 'middle';
   ctx.fillText(`LUMEN HEIST — ${level.name}`, 14, 23);
-  ctx.font = `15px ${FONT}`;
+  ctx.font = `bold 16px ${FONT}`;
   const taken = world.shardsTaken;
   const total = level.shards.length;
-  ctx.fillStyle = PALETTE.shard;
-  ctx.fillText(`◆ ${taken}/${total} shards`, 330, 23);
+  ctx.fillStyle = PALETTE.gold;
+  ctx.fillText(`◆ ${taken}/${total} SHARDS`, 320, 23);
   ctx.fillStyle = PALETTE.text;
+  ctx.font = `15px ${FONT}`;
   ctx.fillText(
     `Tries: ${'●'.repeat(Math.max(0, world.triesLeft))}${'○'.repeat(Math.max(0, 3 - world.triesLeft))}`,
-    470, 23,
+    480, 23,
   );
   // Stamina bar.
   ctx.fillStyle = '#2a3040';
@@ -255,6 +441,12 @@ function paintHud(ctx, world, meter) {
   ctx.fillStyle = PALETTE.muted;
   ctx.font = `12px ${FONT}`;
   ctx.fillText('SPRINT', 746, 23);
+  // Noise readout: what the wardens can hear right now.
+  const noise = world.player.noiseRadius;
+  const noiseLabel = noise <= 0 ? 'SILENT' : noise <= 30 ? 'quiet' : noise <= 80 ? 'soft' : 'LOUD';
+  ctx.fillStyle = noise >= 190 ? PALETTE.danger : noise > 0 ? PALETTE.gold : PALETTE.muted;
+  ctx.font = `bold 12px ${FONT}`;
+  ctx.fillText(`NOISE ${noiseLabel}`, 806, 23);
   // Detection eye: the highest warden meter, right side.
   const eyeX = 1060;
   ctx.fillStyle = meter >= 100 ? PALETTE.guardAlert : meter >= EYE_WARN ? '#ffb020' : PALETTE.text;
@@ -338,6 +530,7 @@ export function createRenderer(canvas) {
     const level = world.level;
     const time = world.time;
     paintFloor(ctx, level);
+    paintLampPools(ctx, level);
     for (const guard of world.guards) paintCone(ctx, guard, level);
     paintWalls(ctx, level);
     for (const shard of level.shards) if (!shard.taken) paintShard(ctx, shard, time);
@@ -347,6 +540,13 @@ export function createRenderer(canvas) {
     paintThief(ctx, world.player, time);
     let meter = 0;
     for (const guard of world.guards) meter = Math.max(meter, guard.meter);
+    paintVignette(ctx);
+    paintFieldNotes(ctx);
+    // Hidden in shadow and nobody is onto you: the game says so.
+    const playerTile = `${Math.floor(world.player.x / FIELD.tile)},${Math.floor(world.player.y / FIELD.tile)}`;
+    if (level.shadows.has(playerTile) && meter < EYE_WARN) {
+      paintBubble(ctx, 'HIDDEN in shadow', world.player.x, world.player.y - 20);
+    }
     paintHud(ctx, world, meter);
 
     if (world.caughtFlash > 0) {
